@@ -71,7 +71,7 @@ class Args:
         "/home/zqy/code/RL2/dataset/demos/StackCube-v1/motionplanning/trajectory.rgbd.pd_ee_delta_pose.cpu.h5"
     )
     """the path of demo dataset (pkl or h5)"""
-    num_demos: Optional[int] = 20
+    num_demos: Optional[int] = 200
     """number of trajectories to load from the demo dataset"""
     total_iters: int = 500_000
     """total timesteps of the experiment"""
@@ -95,7 +95,7 @@ class Args:
     pred_horizon: int = 16 # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     emb_dim: int = 256  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [1, 2, 2]
+        default_factory=lambda: [1, 2, 4]
     )  # default setting is about ~4.5M params
     n_groups: int = (
         8  # jigu says it is better to let each
@@ -111,7 +111,7 @@ class Args:
     max episode steps of environments in ManiSkill are tuned lower so reinforcement learning agents can learn faster."""
     log_freq: int = 2000
     """the frequency of logging the training metrics"""
-    eval_freq: int = 10_000
+    eval_freq: int = 20_000
     """the frequency of evaluating the agent on the evaluation environments"""
     save_freq: Optional[int] = 100_000
     """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
@@ -590,7 +590,7 @@ if __name__ == "__main__":
                 solver = "euler"
 
             eval_metrics = evaluate(
-                args.num_eval_envs, agent, envs,args,model_dino, args.sim_backend,norm_params
+                args.num_eval_episodes, agent, envs,args,model_dino, args.sim_backend,norm_params
             )
             timings["eval"] += time.time() - last_tick
 

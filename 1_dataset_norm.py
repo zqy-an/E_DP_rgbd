@@ -17,16 +17,15 @@ from torch.utils.data.dataset import Dataset
 from diffusion_policy.utils import (IterationBasedBatchSampler,
                                     build_state_obs_extractor, convert_obs,
                                     worker_init_fn)
+import pickle
 from mani_skill.utils import gym_utils
-
-
 
 @dataclass
 class Args:
-    env_id: str = "PegInsertionSide-v1"
+    env_id: str = "StackCube-v1"
     """the id of the environment"""
     demo_path: str = (
-        "/home/zqy/code/RL2/dataset/demos/PegInsertionSide-v1/motionplanning/trajectory.rgbd.pd_ee_delta_pose.cpu.h5"
+        "/home/zqy/code/RL2/dataset/demos/StackCube-v1/motionplanning/trajectory.rgbd.pd_ee_delta_pose.cpu.h5"
     )
     """the path of demo dataset (pkl or h5)"""
     num_demos: Optional[int] = 150
@@ -45,6 +44,14 @@ def reorder_keys(d, ref_dict):
         else:
             out[k] = d[k]
     return out
+
+def save_data_pickle(data, filepath):
+    with open(filepath, 'wb') as f:
+        pickle.dump(data, f)
+
+def load_data_pickle(filepath):
+    with open(filepath, 'rb') as f:
+        return pickle.load(f)
 
 class DemoDataset_DP(Dataset):  # Load everything into memory
     def __init__(self, data_path, obs_process_fn, obs_space, num_traj):
@@ -67,9 +74,9 @@ class DemoDataset_DP(Dataset):  # Load everything into memory
             )  # key order in demo is different from key order in env obs
             _obs_traj_dict = obs_process_fn(_obs_traj_dict)
             if args.depth:
-                _obs_traj_dict["depth"] = torch.Tensor(
-                    _obs_traj_dict["depth"].astype(np.float32) / 1024
-                ).to(torch.float16)
+                depth = _obs_traj_dict["depth"].astype(np.float32) / 1024
+                depth = np.clip(depth, 0, 1)  # Clip depth values > 1 to 1
+                _obs_traj_dict["depth"] = torch.tensor(depth, dtype=torch.float32)
             _obs_traj_dict["rgb"] = torch.from_numpy(
                 _obs_traj_dict["rgb"]
             ).float() / 255  # 转换为浮点数并归一化到 [0, 1]
@@ -80,6 +87,11 @@ class DemoDataset_DP(Dataset):  # Load everything into memory
         # 计算均值和标准差
         self.compute_mean_std(trajectories)
         self.trajectories = trajectories
+
+        # 存储obs参数
+        self.act_dim = trajectories["actions"][0].shape[1]
+        self.state_dim = trajectories["observations"][0]["state"].shape[1]
+        self.cam_num = int(trajectories["observations"][0]["rgb"].shape[1] / 3)
 
     def compute_mean_std(self, trajectories):
         """
@@ -134,12 +146,15 @@ class DemoDataset_DP(Dataset):  # Load everything into memory
             "rgb_std": self.rgb_std.tolist(),
             "depth_mean": self.depth_mean.tolist() if hasattr(self, 'depth_mean') else None,
             "depth_std": self.depth_std.tolist() if hasattr(self, 'depth_std') else None,
+            "act_dim": self.act_dim,
+            "state_dim": self.state_dim,
+            "cam_num": self.cam_num,
+
         }
 
         with open(output_json, "w") as f:
             json.dump(params, f, indent=4)
         print(f"Normalization parameters saved to {output_json}")
-
 
 
 
@@ -177,8 +192,12 @@ if __name__ == "__main__":
         obs_mode_ = "rgb"
     tmp_env = gym.make(args.env_id, obs_mode=obs_mode_)
     original_obs_space = tmp_env.observation_space
+    print(original_obs_space)
     dataset = DemoDataset_DP(
         args.demo_path, obs_process_fn, original_obs_space, args.num_demos
     )
     norm_path = f'./norm/{args.env_id}_{args.control_mode}_norm_params.json'
     dataset.save_normalization_params(norm_path)
+    # Example usage
+    obs_space_path = f'./norm/{args.env_id}_{args.control_mode}_obs_space.pkl'
+    save_data_pickle(original_obs_space, obs_space_path)

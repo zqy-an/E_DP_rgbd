@@ -20,7 +20,7 @@ def collect_episode_info(infos, result):
                 result['fail'].append(info['fail'])
     return result
 
-def evaluate(n: int, agent, eval_envs, args, theia_model,sim_backend: str, norm_params = None):
+def evaluate(n_ep: int, agent, eval_envs, args, theia_model,sim_backend: str, norm_params = None):
 
     if norm_params is not None:
         norm_params = {key: value.unsqueeze(0).to(args.device) if value is not None else None for key, value in norm_params.items()}
@@ -29,7 +29,7 @@ def evaluate(n: int, agent, eval_envs, args, theia_model,sim_backend: str, norm_
         obs, info = eval_envs.reset()
         eps_count = 0
         n, seq, h, w ,cn = obs["rgb"].shape
-        while eps_count < n:
+        while eps_count < n_ep:
             obs = common.to_tensor(obs, args.device)
             # theia
             rgb_ = obs["rgb"].view(seq * n, *obs["rgb"].shape[2:])

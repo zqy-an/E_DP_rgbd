@@ -230,7 +230,7 @@ def build_state_obs_extractor(env_id):
         return lambda obs: list(obs["agent"].values()) + list(obs["extra"].values())
     elif env_name == "LiftPegUpright" or env_name == "PokeCube" or env_name == "PullCube":
         return lambda obs: list(obs["agent"].values()) + list(obs["extra"].values())
-    elif env_name == "PegInsertionSide" :
+    elif env_name == "PegInsertionSide" or env_name == "PullCubeTool" :
         return lambda obs: list(obs["agent"].values()) + list(obs["extra"].values())
     else:
         raise NotImplementedError(f"Please tune state obs by yourself")
