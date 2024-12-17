@@ -25,14 +25,14 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
 
-from diffusion_policy.evaluate import evaluate
-from diffusion_policy.make_env import make_eval_envs
-from diffusion_policy.utils import (IterationBasedBatchSampler,
-                                    build_state_obs_extractor, convert_obs,
-                                    worker_init_fn,FlattenRGBDObservationWrapper_zqy)
-from diffusion_policy.condition_RepVit import RepVitObsCondition
-from diffusion_policy.condition_conv import CNNObsCondition
-from diffusion_policy.theia import Theia_DINOv2
+from mani_utils.evaluate import evaluate
+from mani_utils.make_env import make_eval_envs
+from mani_utils.utils import (IterationBasedBatchSampler,
+                              build_state_obs_extractor, convert_obs,
+                              worker_init_fn, FlattenRGBDObservationWrapper_zqy)
+from mani_utils.condition_RepVit import RepVitObsCondition
+from mani_utils.condition_Conv import CNNObsCondition
+from mani_utils.theia import Theia_DINOv2
 
 from mani_skill.utils import gym_utils
 from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
@@ -144,7 +144,7 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
         if data_path[-4:] == ".pkl":
             raise NotImplementedError()
         else:
-            from diffusion_policy.utils import load_demo_dataset
+            from mani_utils.utils import load_demo_dataset
 
             trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
             # trajectories['observations'] is a list of dict, each dict is a traj, with keys in obs_space, values with length L+1
@@ -282,7 +282,7 @@ def create_diffusion_model(args):
     - args: An object containing the necessary configuration parameters such as:
       - nn_diffusion: type of the neural network for diffusion ('DiT1d' or 'chi_unet')
       - nn_condition: condition model ('RepVitObsCondition')
-      - diffusion_policy: type of diffusion policy ('DDPM' or 'EDM')
+      - mani_utils: type of diffusion policy ('DDPM' or 'EDM')
       - act_dim: the action dimension
       - emb_dim: the embedding dimension
       - obs_horizon: the number of observation steps
@@ -473,7 +473,7 @@ if __name__ == "__main__":
             name=run_name,
             save_code=True,
             group="DiffusionPolicy",
-            tags=["diffusion_policy"],
+            tags=["mani_utils"],
         )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(

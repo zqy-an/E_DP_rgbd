@@ -14,9 +14,9 @@ import tyro
 
 from gymnasium import spaces
 from torch.utils.data.dataset import Dataset
-from diffusion_policy.utils import (IterationBasedBatchSampler,
-                                    build_state_obs_extractor, convert_obs,
-                                    worker_init_fn)
+from mani_utils.utils import (IterationBasedBatchSampler,
+                              build_state_obs_extractor, convert_obs,
+                              worker_init_fn)
 import pickle
 from mani_skill.utils import gym_utils
 
@@ -58,7 +58,7 @@ class DemoDataset_DP(Dataset):  # Load everything into memory
         if data_path.endswith(".pkl"):
             raise NotImplementedError("Loading from .pkl is not implemented.")
         else:
-            from diffusion_policy.utils import load_demo_dataset
+            from mani_utils.utils import load_demo_dataset
 
             trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
             # trajectories['observations'] is a list of dict, each dict is a traj, with keys in obs_space, values with length L+1

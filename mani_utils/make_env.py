@@ -96,8 +96,8 @@ def make_eval_envs(
                         output_dir=video_dir,
                         save_trajectory=False,
                         info_on_video=True,
-                        source_type="diffusion_policy",
-                        source_desc="diffusion_policy evaluation rollout",
+                        source_type="mani_utils",
+                        source_desc="mani_utils evaluation rollout",
                     )
                 if env_kwargs["obs_mode"] == "state":
                     env = gym.wrappers.FrameStack(env, other_kwargs["obs_horizon"])
@@ -144,8 +144,8 @@ def make_eval_envs(
                 output_dir=video_dir,
                 save_trajectory=False,
                 save_video=True,
-                source_type="diffusion_policy",
-                source_desc="diffusion_policy evaluation rollout",
+                source_type="mani_utils",
+                source_desc="mani_utils evaluation rollout",
                 max_steps_per_video=max_episode_steps,
             )
         env = ManiSkillVectorEnv(env, ignore_terminations=True, record_metrics=True)

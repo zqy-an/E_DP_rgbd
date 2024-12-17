@@ -49,9 +49,10 @@ def evaluate(n_ep: int, agent, eval_envs, args, theia_model,sim_backend: str, no
                     rgb = obs["rgb"] / 255.0
                     rgb = rgb.permute(0, 1, 4, 2, 3)
                     obs["rgb"] = (rgb - norm_params["rgb_mean"]) / norm_params["rgb_std"]
+
                 else:
                     obs["rgb"] = obs["rgb"].permute(0, 1, 4, 2, 3)
-                    # obs["rgb"] = obs["rgb"]
+
 
                 if "depth_mean" in norm_params and "depth" in obs:
                     depth = obs["depth"]
@@ -59,9 +60,11 @@ def evaluate(n_ep: int, agent, eval_envs, args, theia_model,sim_backend: str, no
                     depth = depth.permute(0,1, 4, 2, 3)  # Assuming depth is (B, H, W, C)
                     obs["depth"] = (depth - norm_params["depth_mean"]) / norm_params["depth_std"]
 
+
                 if "state_mean" in norm_params:
                     state = obs["state"]
                     obs["state"] = (state - norm_params["state_mean"]) / norm_params["state_std"]
+
             # action_seq = agent.get_action(obs)
             prior = torch.zeros((n, args.pred_horizon, args.act_dim), device=args.device)
             action_seq, _ = agent.sample(prior=prior, n_samples=n, sample_steps=args.sample_steps,

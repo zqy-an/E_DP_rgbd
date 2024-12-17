@@ -1,4 +1,5 @@
 ## Adapted from https://github.com/arnavg115/ManiSkill/tree/main
+from tqdm import tqdm
 
 ALGO_NAME = "BC_Diffusion_rgbd_UNet"
 
@@ -17,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
+import pickle
 
 from gymnasium import spaces
 from torch.utils.data.dataloader import DataLoader
@@ -24,29 +26,20 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-
-from mani_utils.evaluate_cd import evaluate
-from mani_utils.make_env import make_eval_envs
 from mani_utils.utils import (IterationBasedBatchSampler,
                               build_state_obs_extractor, convert_obs,
                               worker_init_fn, FlattenRGBDObservationWrapper_zqy)
 from mani_utils.condition_RepVit import RepVitObsCondition
 from mani_utils.condition_Conv import CNNObsCondition
+from mani_utils.condition_Resnet import ResnetObsCondition
 from mani_utils.theia import Theia_DINOv2
 
 from mani_skill.utils import gym_utils
-from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
-
 from cleandiffuser.diffusion.diffusionsde import DiscreteDiffusionSDE
-from cleandiffuser.nn_diffusion import DiT1d
-from cleandiffuser.nn_diffusion import ChiTransformer
-from cleandiffuser.nn_diffusion import ChiUNet1d
+from cleandiffuser.nn_diffusion import DiT1d,ChiTransformer,ChiUNet1d
 from cleandiffuser.diffusion.ddpm import DDPM
 from cleandiffuser.diffusion.edm import EDM
 from torch.optim.lr_scheduler import CosineAnnealingLR
-
-import warnings
-warnings.filterwarnings("ignore")
 
 @dataclass
 class Args:
@@ -58,30 +51,21 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     device: str = 'cuda:0'
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "ManiSkill"
-    """the wandb's project name"""
-    wandb_entity: Optional[str] = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = True
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    env_id: str = "StackCube-v1"
+    env_id: str = "PullCubeTool-v1"
     """the id of the environment"""
     demo_path: str = (
-        "/home/zqy/code/RL2/dataset/demos/StackCube-v1/motionplanning/trajectory.rgbd.pd_ee_delta_pose.cpu.h5"
+        "/home/zqy/code/RL2/dataset/demos/PullCubeTool-v1/motionplanning/trajectory.rgbd.pd_ee_delta_pose.cpu.h5"
     )
     """the path of demo dataset (pkl or h5)"""
-    num_demos: Optional[int] = 150
+    num_demos: Optional[int] = 5
     """number of trajectories to load from the demo dataset"""
     total_iters: int = 500_000
     """total timesteps of the experiment"""
-    batch_size: int = 32
+    batch_size: int = 64
     """the batch size of sample from the replay memory"""
 
     # Diffusion Model Args
-    nn_condition: str = 'CNNObsCondition'
+    nn_condition: str = 'ResnetObsCondition'
     nn_diffusion: str = 'chi_unet'
     diffusion_policy: str = 'DDPM'
     sample_steps: int = 100
@@ -97,7 +81,7 @@ class Args:
     pred_horizon: int = 16 # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     emb_dim: int = 256  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [1, 2, 4]
+        default_factory=lambda: [1, 2, 2]
     )  # default setting is about ~4.5M params
     n_groups: int = (
         8  # jigu says it is better to let each
@@ -107,22 +91,10 @@ class Args:
     dino: bool = True
     """use depth to train"""
 
-    # Environment/experiment specific arguments
-    max_episode_steps: Optional[int] = 100
-    """Change the environments' max_episode_steps to this value. Sometimes necessary if the demonstrations being imitated are too short. Typically the default
-    max episode steps of environments in ManiSkill are tuned lower so reinforcement learning agents can learn faster."""
     log_freq: int = 2000
     """the frequency of logging the training metrics"""
-    eval_freq: int = 20_000
-    """the frequency of evaluating the agent on the evaluation environments"""
     save_freq: Optional[int] = 100_000
     """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
-    num_eval_episodes: int = 25
-    """the number of episodes to evaluate the agent on"""
-    num_eval_envs: int = 5
-    """the number of parallel environments to evaluate the agent on"""
-    sim_backend: str = "cpu"
-    """the simulation backend to use for evaluation environments. can be "cpu" or "gpu"""
     num_dataload_workers: int = 0
     """the number of workers to use for loading the training data in the torch dataloader"""
     control_mode: str = "pd_ee_delta_pose"
@@ -130,7 +102,6 @@ class Args:
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
-
 
 def reorder_keys(d, ref_dict):
     out = dict()
@@ -140,6 +111,25 @@ def reorder_keys(d, ref_dict):
         else:
             out[k] = d[k]
     return out
+
+def load_data_pickle(filepath):
+    with open(filepath, 'rb') as f:
+        return pickle.load(f)
+
+
+def process_in_batches(tensor, model, batch_size):
+
+    num_batches = (tensor.size(0) + batch_size - 1) // batch_size
+    processed_batches = []
+
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, tensor.size(0))
+        batch = tensor[start_idx:end_idx]
+        batch_processed = model(batch)
+        processed_batches.append(batch_processed)
+
+    return np.concatenate(processed_batches, axis=0)
 
 class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
     def __init__(self, data_path, obs_process_fn, obs_space, num_traj,normalization_params,theia_model):
@@ -161,7 +151,6 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
         self.rgb_std = normalization_params["rgb_std"]
         self.depth_mean = normalization_params["depth_mean"]
         self.depth_std = normalization_params["depth_std"]
-
         # Pre-process the observations, make them align with the obs returned by the obs_wrapper
         obs_traj_dict_list = []
         for obs_traj_dict in trajectories["observations"]:
@@ -180,10 +169,11 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
             # Normalize dino_v2
             rgb = torch.tensor(_obs_traj_dict["rgb"], dtype=torch.float32)
             rgb1 = rgb[:, :3, :, :].permute(0, 2, 3, 1)
-            rgb1_dino = theia_model(rgb1)
+            dino_bs = 32  # Specify your desired batch size here
+            rgb1_dino = process_in_batches(rgb1, theia_model, dino_bs)
             if rgb.shape[1]>3:
                 rgb2 = rgb[:, 3:, :, :].permute(0, 2, 3, 1)
-                rgb2_dino = theia_model(rgb2)
+                rgb2_dino = process_in_batches(rgb2, theia_model, dino_bs)
                 rgb_dino = np.concatenate((rgb1_dino, rgb2_dino), axis=-1)
                 _obs_traj_dict["rgb_dino"] = torch.tensor(rgb_dino, dtype=torch.float32).permute(0, 3, 1,2)
             else:
@@ -286,28 +276,27 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
     def __len__(self):
         return len(self.slices)
 
-
 def create_diffusion_model(args):
     """
-    Creates a diffusion model based on the specified arguments.
+    Constructs a diffusion model based on provided configuration parameters.
 
     Args:
-    - args: An object containing the necessary configuration parameters such as:
-      - nn_diffusion: type of the neural network for diffusion ('DiT1d' or 'chi_unet')
-      - nn_condition: condition model ('RepVitObsCondition')
-      - mani_utils: type of diffusion policy ('DDPM' or 'EDM')
-      - act_dim: the action dimension
-      - emb_dim: the embedding dimension
-      - obs_horizon: the number of observation steps
-      - horizon: the time horizon for the agent
-      - device: the device to place the model on ('cuda' or 'cpu')
-      - lr: learning rate
-      - sample_steps: number of diffusion steps
-      - pre_model: pre-trained model path (optional)
-      - other necessary fields for condition models
+        args: An object containing the following configuration attributes:
+            - nn_diffusion (str): Type of neural network for diffusion ('DiT1d', 'chi_unet', or 'chi_transformer').
+            - nn_condition (str): Type of condition model ('RepVitObsCondition', 'CNNObsCondition', or 'ResnetObsCondition').
+            - mani_utils (str): Type of diffusion policy ('DDPM' or 'EDM').
+            - act_dim (int): The dimension of the action space.
+            - emb_dim (int): The dimension of the embedding space.
+            - obs_horizon (int): Number of observation steps.
+            - horizon (int): Time horizon for the agent.
+            - device (str): Device to deploy the model ('cuda' or 'cpu').
+            - lr (float): Learning rate.
+            - sample_steps (int): Number of diffusion steps.
+            - pre_model (str, optional): Path to a pre-trained model.
+            - Other necessary fields specific to the condition models.
 
     Returns:
-    - agent: The diffusion policy model (DDPM or EDM) configured with the appropriate neural network.
+        agent: A configured diffusion policy model (either DDPM or EDM) with the specified neural network.
     """
 
     # Diffusion Model
@@ -318,7 +307,7 @@ def create_diffusion_model(args):
     elif args.nn_diffusion == "chi_unet":
         nn_diffusion = ChiUNet1d(
             args.act_dim, args.emb_dim, args.obs_horizon, model_dim=256, emb_dim=256, dim_mult=args.unet_dims,
-            obs_as_global_cond=True, timestep_emb_type="positional").to(device)
+            obs_as_global_cond=True, timestep_emb_type="positional").to(args.device)
     elif args.nn == "chi_transformer":
         nn_diffusion = ChiTransformer(
             args.act_dim, args.emb_dim, args.horizon, args.obs_horizon, d_model=256, nhead=4, num_layers=4,
@@ -332,6 +321,9 @@ def create_diffusion_model(args):
             state_dim=args.state_dim,cam_num=args.cam_num,use_depth=args.depth,use_dino=args.dino,emb_dim=args.emb_dim, ).to(args.device)
     elif args.nn_condition == "CNNObsCondition":
         nn_condition = CNNObsCondition(
+            state_dim=args.state_dim,cam_num=args.cam_num,use_depth=args.depth,use_dino=args.dino,emb_dim=args.emb_dim, ).to(args.device)
+    elif args.nn_condition == "ResnetObsCondition":
+        nn_condition = ResnetObsCondition(
             state_dim=args.state_dim,cam_num=args.cam_num,use_depth=args.depth,use_dino=args.dino,emb_dim=args.emb_dim, ).to(args.device)
     else:
         raise NotImplementedError(f"Condition model {args.nn_condition} is not implemented.")
@@ -380,6 +372,9 @@ def load_normalization_params(json_path):
         "rgb_std": torch.tensor(params["rgb_std"], dtype=torch.float32),
         "depth_mean": torch.tensor(params["depth_mean"], dtype=torch.float32),
         "depth_std": torch.tensor(params["depth_std"], dtype=torch.float32),
+        "act_dim": params["act_dim"],
+        "state_dim": params["state_dim"],
+        "cam_num": params["cam_num"]
     }
 
 if __name__ == "__main__":
@@ -414,81 +409,24 @@ if __name__ == "__main__":
     # Load normalization parameters
     norm_params = load_normalization_params(norm_path)
 
+    # env 参数
+    args.act_dim = int(norm_params["act_dim"])
+    args.state_dim = int(norm_params["state_dim"])
+    args.cam_num = int(norm_params["cam_num"])
+
+    obs_space_path = f'./norm/{args.env_id}_{args.control_mode}_obs_space.pkl'
+    original_obs_space = load_data_pickle(obs_space_path)
+
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     save_args_to_json(args, os.path.join(f"runs/{run_name}", 'params.json'))
         # 执行pipeline函数之前打印所有参数
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
 
-    if args.depth == True:
-        env_kwargs = dict(
-            control_mode=args.control_mode,
-            reward_mode="sparse",
-            obs_mode="rgbd",
-            render_mode="rgb_array",
-        )
-    else:
-        env_kwargs = dict(
-            control_mode=args.control_mode,
-            reward_mode="sparse",
-            obs_mode="rgb",
-            render_mode="rgb_array",
-        )
-    if args.max_episode_steps is not None:
-        env_kwargs["max_episode_steps"] = args.max_episode_steps
-    other_kwargs = dict(obs_horizon=args.obs_horizon)
-    if args.depth == True:
-        envs = make_eval_envs(
-            args.env_id,
-            args.num_eval_envs,
-            args.sim_backend,
-            env_kwargs,
-            other_kwargs,
-            video_dir=f"runs/{run_name}/videos" if args.capture_video else None,
-            wrappers=[partial(FlattenRGBDObservationWrapper_zqy,
-                              # depth=True
-                              )],
-        )
-    else:
-        envs = make_eval_envs(
-            args.env_id,
-            args.num_eval_envs,
-            args.sim_backend,
-            env_kwargs,
-            other_kwargs,
-            video_dir=f"runs/{run_name}/videos" if args.capture_video else None,
-            wrappers=[partial(FlattenRGBDObservationWrapper,
-                              depth=False,
-                              # sep_depth=True
-                              )],
-        )
-    if args.track:
-        import wandb
-
-        config = vars(args)
-        config["eval_env_cfg"] = dict(
-            **env_kwargs,
-            num_envs=args.num_eval_envs,
-            env_id=args.env_id,
-            env_horizon=gym_utils.find_max_episode_steps_value(envs),
-        )
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-
-            config=config,
-            name=run_name,
-            save_code=True,
-            group="DiffusionPolicy",
-            tags=["mani_utils"],
-        )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -505,16 +443,10 @@ if __name__ == "__main__":
         ),  # (B, H, W, C) -> (B, C, H, W)
         state_obs_extractor=build_state_obs_extractor(args.env_id),
     )
-    if args.depth == True:
-        obs_mode_ = "rgbd"
-    else:
-        obs_mode_ = "rgb"
-    tmp_env = gym.make(args.env_id, obs_mode=obs_mode_)
-    orignal_obs_space = tmp_env.observation_space
-    tmp_env.close()
-    model_dino = Theia_DINOv2( args.theia_model_path,args.target_theia_model,args.device)
+
+    model_dinov2 = Theia_DINOv2( args.theia_model_path,args.target_theia_model,args.device)
     dataset = SmallDemoDataset_DiffusionPolicy(
-        args.demo_path, obs_process_fn, orignal_obs_space, args.num_demos,norm_params,model_dino
+        args.demo_path, obs_process_fn, original_obs_space, args.num_demos,norm_params,model_dinov2
     )
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
@@ -528,18 +460,9 @@ if __name__ == "__main__":
         persistent_workers=(args.num_dataload_workers > 0),
     )
 
-    args.act_dim = envs.single_action_space.shape[0]
-    args.state_dim = envs.single_observation_space["state"].shape[1]
-    args.cam_num = int(envs.single_observation_space["rgb"].shape[-1] / 3)
     agent = create_diffusion_model(args)
     # Cosine LR schedule with linear warmup
     lr_scheduler = CosineAnnealingLR(agent.optimizer, T_max=args.total_iters)
-
-    # Exponential Moving Average
-    # accelerates training and improves stability
-    # holds a copy of the model weights
-    # ema = EMAModel(parameters=agent.parameters(), power=0.75)
-    # ema_agent = Agent(envs, args).to(device)
 
     # ---------------------------------------------------------------------------- #
     # Training begins.
@@ -552,8 +475,9 @@ if __name__ == "__main__":
     agent.train()
 
     best_eval_metrics = defaultdict(float)
+    best_loss = np.inf
     timings = defaultdict(float)
-
+    pbar = tqdm(train_dataloader, total=args.total_iters)
     for iteration, data_batch in enumerate(train_dataloader):
         # # copy data from cpu to gpu
         # data_batch = {k: v.cuda(non_blocking=True) for k, v in data_batch.items()}
@@ -574,52 +498,17 @@ if __name__ == "__main__":
         if iteration % args.log_freq == 0:
             print(f"Iteration {iteration}, loss: {diffusion_loss}")
             writer.add_scalar("losses/total_loss", diffusion_loss, iteration)
-
-        # Evaluation
-        if iteration % args.eval_freq == 0:
-            last_tick = time.time()
-            agent.model.eval()
-            agent.model_ema.eval()
-
-
-            if args.diffusion_policy == "DDPM":
-                solver = None
-            elif args.diffusion_policy == "DDIM":
-                solver = "ddim"
-            elif args.diffusion_policy == "DPM":
-                solver = "ode_dpmpp_2"
-            elif args.diffusion_policy == "EDM":
-                solver = "euler"
-
-            eval_metrics = evaluate(
-                args.num_eval_episodes, agent, envs,args,model_dino, args.sim_backend,norm_params
-            )
-            timings["eval"] += time.time() - last_tick
-
-            print(f"Evaluated {len(eval_metrics['success_at_end'])} episodes")
-            for k in eval_metrics.keys():
-                eval_metrics[k] = np.mean(eval_metrics[k])
-                writer.add_scalar(f"eval/{k}", eval_metrics[k], iteration)
-                print(f"{k}: {eval_metrics[k]:.4f}")
-
-            save_on_best_metrics = ["success_once", "success_at_end"]
-            for k in save_on_best_metrics:
-                if k in eval_metrics and eval_metrics[k] > best_eval_metrics[k]:
-                    best_eval_metrics[k] = eval_metrics[k]
-                    os.makedirs(f'runs/{run_name}/checkpoints', exist_ok=True)
-                    agent.save(f'runs/{run_name}/checkpoints/{k}.pt')
-                    print(
-                        f"New best {k}_rate: {eval_metrics[k]:.4f}. Saving checkpoint."
-                    )
-
-            agent.model.train()
-            agent.model_ema.train()
+            if diffusion_loss < best_loss:
+                best_loss = diffusion_loss
+                os.makedirs(f'runs/{run_name}/checkpoints', exist_ok=True)
+                agent.save(f'runs/{run_name}/checkpoints/best_loss.pt')
+        pbar.set_postfix(dict(loss=diffusion_loss))
+        pbar.update(1)
 
         # Checkpoint
         if args.save_freq is not None and iteration % args.save_freq == 0:
             os.makedirs(f'runs/{run_name}/checkpoints', exist_ok=True)
             agent.save(f'runs/{run_name}/checkpoints/{iteration}.pt')
-
 
     end_time = time.time()
     print("Training finished at: ", time.ctime(end_time))
@@ -628,5 +517,4 @@ if __name__ == "__main__":
     print("Total training time:{:.2f} minutes".format(training_time / 60))
     print("Total training time:{:.2f} hours".format(training_time / 3600))
 
-    envs.close()
     writer.close()
