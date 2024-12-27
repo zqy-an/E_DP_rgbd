@@ -64,6 +64,9 @@ def evaluate(n_ep: int, agent, eval_envs, args, theia_model,sim_backend: str, no
                 if "state_mean" in norm_params:
                     state = obs["state"]
                     obs["state"] = (state - norm_params["state_mean"]) / norm_params["state_std"]
+                if args.state_fix:
+                    indices = torch.cat((torch.arange(0, 9), torch.arange(18, obs["state"].shape[-1]))).to(args.device)
+                    obs["state"] = obs["state"].index_select(-1, indices)
 
             # action_seq = agent.get_action(obs)
             prior = torch.zeros((n, args.pred_horizon, args.act_dim), device=args.device)

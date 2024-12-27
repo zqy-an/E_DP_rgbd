@@ -32,6 +32,7 @@ pip install -e .
 ```bash
 pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
 pip install transformers==4.45.2 zarr==2.16.1 timm==1.0.11
+pip install scikit-learn
 ```
 
 ## 运行

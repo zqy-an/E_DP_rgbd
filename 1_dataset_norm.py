@@ -28,7 +28,7 @@ class Args:
         "/home/zqy/code/RL2/dataset/demos/StackCube-v1/motionplanning/trajectory.rgbd.pd_ee_delta_pose.cpu.h5"
     )
     """the path of demo dataset (pkl or h5)"""
-    num_demos: Optional[int] = 150
+    num_demos: Optional[int] = 300
     """number of trajectories to load from the demo dataset"""
     depth: bool = True
     """use depth to train"""
@@ -67,8 +67,9 @@ class DemoDataset_DP(Dataset):  # Load everything into memory
         print("Raw trajectory loaded, start to pre-process the observations...")
 
         # Pre-process the observations, make them align with the obs returned by the obs_wrapper
-        obs_traj_dict_list = []
-        for obs_traj_dict in trajectories["observations"]:
+        num_traj = len(trajectories["observations"])
+        for traj_idx in range(num_traj):
+            obs_traj_dict = trajectories["observations"][traj_idx]
             _obs_traj_dict = reorder_keys(
                 obs_traj_dict, obs_space
             )  # key order in demo is different from key order in env obs
@@ -81,8 +82,7 @@ class DemoDataset_DP(Dataset):  # Load everything into memory
                 _obs_traj_dict["rgb"]
             ).float() / 255  # 转换为浮点数并归一化到 [0, 1]
             _obs_traj_dict["state"] = torch.from_numpy(_obs_traj_dict["state"]).float()
-            obs_traj_dict_list.append(_obs_traj_dict)
-        trajectories["observations"] = obs_traj_dict_list
+            trajectories["observations"][traj_idx] = _obs_traj_dict
 
         # 计算均值和标准差
         self.compute_mean_std(trajectories)
